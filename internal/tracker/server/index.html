@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>☕️ Bailey's Caffeine Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Base libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-crosshair"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <!-- Flatpickr -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+</head>
+<body class="bg-black text-white">
+<div class="p-4 max-w-7xl mx-auto">
+    <!-- Header with Date Range -->
+    <div class="flex justify-between items-center mb-4">
+        <h1 class="text-xl">☕️ Bailey's Caffeine Tracker</h1>
+        <div class="relative">
+            <input type="text" id="dateRange" class="bg-zinc-900 text-white px-4 py-2 rounded-lg cursor-pointer" readonly>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <!-- Chart -->
+        <div class="lg:col-span-2 bg-zinc-900 p-4 rounded-lg">
+            <h2 class="text-sm mb-4">Caffeine Level Over Time</h2>
+            <div style="height: 300px">
+                <canvas id="levelChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="space-y-4">
+            <div class="bg-zinc-900 p-4 rounded-lg">
+                <h2 class="text-sm mb-2">Current Level</h2>
+                <div id="currentLevel" class="text-4xl">-- mg</div>
+            </div>
+            <div class="bg-zinc-900 p-4 rounded-lg">
+                <h2 class="text-sm mb-2">Total Intake</h2>
+                <div id="lifetimeIntake" class="text-4xl">-- mg</div>
+            </div>
+            <div class="bg-zinc-900 p-4 rounded-lg">
+                <h2 class="text-sm mb-2">Total Cost</h2>
+                <div id="lifetimeCost" class="text-4xl">$--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Events -->
+    <div class="mt-4 bg-zinc-900 p-4 rounded-lg">
+        <h2 class="text-sm mb-4">Caffeine Events</h2>
+        <div id="eventsList" class="space-y-2">
+            <!-- Events will be inserted here -->
+        </div>
+    </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
