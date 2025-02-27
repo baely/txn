@@ -59,9 +59,9 @@ func NewWithConfig(cfg *Config) *PresenceService {
 		logger:          cfg.Logger,
 		slackWebhookURL: strings.TrimSpace(cfg.SlackWebhookURL),
 		transactionFilters: []TransactionFilter{
-			AmountBetween(-700, -400),      // between -$7 and -$4
-			Weekday(),                       // on a weekday
-			NotForeign(),                    // not a foreign transaction
+			AmountBetween(-700, -400),         // between -$7 and -$4
+			Weekday(),                         // on a weekday
+			NotForeign(),                      // not a foreign transaction
 			Category("restaurants-and-cafes"), // in the restaurants-and-cafes category
 		},
 	}
@@ -97,11 +97,11 @@ func (s *PresenceService) Chi() chi.Router {
 // HandleEvent processes transaction events from the webhook service
 // It implements the balance.TransactionEventHandler interface
 func (s *PresenceService) HandleEvent(event balance.TransactionEvent) error {
-	s.logger.Info("Received transaction event", 
+	s.logger.Info("Received transaction event",
 		"description", event.Transaction.Attributes.Description,
 		"amount", event.Transaction.Attributes.Amount.Value,
 		"created_at", event.Transaction.Attributes.CreatedAt)
-	
+
 	s.processTransaction(event.Transaction)
 	return nil
 }
@@ -118,7 +118,7 @@ var (
 // handleRawStatus returns a simple yes/no response indicating presence
 func (s *PresenceService) handleRawStatus(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Raw status request received")
-	
+
 	status := s.getPresenceStatus()
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -128,11 +128,11 @@ func (s *PresenceService) handleRawStatus(w http.ResponseWriter, r *http.Request
 // handleIndexPage serves the main HTML page
 func (s *PresenceService) handleIndexPage(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Index page request received")
-	
+
 	s.mutex.RLock()
 	page := s.indexPage
 	s.mutex.RUnlock()
-	
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
@@ -151,7 +151,7 @@ func (s *PresenceService) handleFavicon(w http.ResponseWriter, r *http.Request) 
 func (s *PresenceService) processTransaction(transaction model.TransactionResource) {
 	// Apply all filters to the transaction
 	if !s.meetsAllCriteria(transaction) {
-		s.logger.Info("Transaction does not meet presence criteria", 
+		s.logger.Info("Transaction does not meet presence criteria",
 			"description", transaction.Attributes.Description)
 		return
 	}
@@ -174,7 +174,7 @@ func (s *PresenceService) getPresenceStatus() string {
 	s.mutex.RLock()
 	transaction := s.cachedTransaction
 	s.mutex.RUnlock()
-	
+
 	if isTransactionToday(transaction) {
 		return "yes"
 	}
@@ -185,42 +185,55 @@ func (s *PresenceService) getPresenceStatus() string {
 func (s *PresenceService) storeTransaction(transaction model.TransactionResource) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	
+
 	// Only update if the new transaction is more recent
-	if !s.cachedTransaction.Attributes.CreatedAt.IsZero() && 
-	   s.cachedTransaction.Attributes.CreatedAt.After(transaction.Attributes.CreatedAt) {
+	if !s.cachedTransaction.Attributes.CreatedAt.IsZero() &&
+		s.cachedTransaction.Attributes.CreatedAt.After(transaction.Attributes.CreatedAt) {
 		return
 	}
-	
-	s.logger.Info("Updating cached transaction", 
+
+	s.logger.Info("Updating cached transaction",
 		"description", transaction.Attributes.Description,
 		"created_at", transaction.Attributes.CreatedAt.Format(time.RFC3339))
-	
+
 	s.cachedTransaction = transaction
-	s.refreshPage()
+	s.refreshPageWithoutLock()
 }
 
 // refreshPage updates the index page with current data
 func (s *PresenceService) refreshPage() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	
+
+	s.refreshPageWithoutLock()
+}
+
+// refreshPageWithoutLock updates the index page with current data without acquiring the mutex
+// Caller must hold the mutex lock before calling this function
+func (s *PresenceService) refreshPageWithoutLock() {
 	isPresent := isTransactionToday(s.cachedTransaction)
 	status := "no"
 	if isPresent {
 		status = "yes"
 	}
-	
+
 	description := s.getPresenceDescription(isPresent, s.cachedTransaction)
 	newPage := []byte(fmt.Sprintf(indexHTML, status, description))
-	
+
 	// Check if the page content has changed
 	changed := !bytes.Equal(s.indexPage, newPage)
 	s.indexPage = newPage
-	
+
 	// Notify Slack if the page changed
 	if changed && s.slackWebhookURL != "" {
-		go s.notifySlack(status, description)
+		// Create local copies of variables needed for the goroutine
+		slackURL := s.slackWebhookURL
+		statusCopy := status
+		descCopy := description
+
+		go func(url, status, description string) {
+			s.notifySlack(status, description)
+		}(slackURL, statusCopy, descCopy)
 	}
 }
 
@@ -229,11 +242,11 @@ func (s *PresenceService) getPresenceDescription(isPresent bool, transaction mod
 	if !isPresent || transaction.Id == "" {
 		return ""
 	}
-	
+
 	amount := fmt.Sprintf("$%.2f", -float64(transaction.Attributes.Amount.ValueInBaseUnits)/100.0)
 	timeStr := transaction.Attributes.CreatedAt.In(melbourneLocation).Format(time.Kitchen)
 	details := fmt.Sprintf("%s at %s", transaction.Attributes.Description, timeStr)
-	
+
 	return fmt.Sprintf("<img src=\"/favicon.ico\" />%s on %s", amount, details)
 }
 
@@ -242,10 +255,10 @@ func (s *PresenceService) notifySlack(status, description string) {
 	if s.slackWebhookURL == "" {
 		return
 	}
-	
+
 	// Clean description for Slack
 	description = strings.Replace(description, "<img src=\"/favicon.ico\" />", "", -1)
-	
+
 	payload := struct {
 		Status      string `json:"status"`
 		Description string `json:"description"`
@@ -253,20 +266,20 @@ func (s *PresenceService) notifySlack(status, description string) {
 		Status:      status,
 		Description: description,
 	}
-	
+
 	data, err := json.Marshal(payload)
 	if err != nil {
 		s.logger.Error("Failed to marshal Slack payload", "error", err)
 		return
 	}
-	
+
 	resp, err := http.Post(s.slackWebhookURL, "application/json", bytes.NewReader(data))
 	if err != nil {
 		s.logger.Error("Failed to send Slack notification", "error", err)
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Error("Slack notification failed", "status", resp.Status)
 	}
@@ -275,26 +288,26 @@ func (s *PresenceService) notifySlack(status, description string) {
 // runDailyRefresher refreshes the page once per day at midnight
 func (s *PresenceService) runDailyRefresher() {
 	s.logger.Info("Starting daily page refresher")
-	
+
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	
+
 	for {
 		now := time.Now().In(melbourneLocation)
 		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 10, 0, melbourneLocation)
 		timeToWait := nextMidnight.Sub(now)
-		
-		s.logger.Debug("Daily refresher cycle", 
+
+		s.logger.Debug("Daily refresher cycle",
 			"current_time", now.Format(time.RFC3339),
 			"next_refresh", nextMidnight.Format(time.RFC3339),
 			"wait_duration", timeToWait.String())
-		
+
 		// Wait until midnight
 		time.Sleep(timeToWait)
-		
+
 		// Refresh the page to clear yesterday's status
 		s.refreshPage()
-		
+
 		// Short sleep to avoid potential race conditions
 		time.Sleep(time.Second)
 	}
@@ -351,7 +364,7 @@ func isTransactionToday(transaction model.TransactionResource) bool {
 	if transaction.Id == "" {
 		return false
 	}
-	
+
 	now := time.Now().In(melbourneLocation)
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, melbourneLocation)
 	return transaction.Attributes.CreatedAt.In(melbourneLocation).After(midnight)
