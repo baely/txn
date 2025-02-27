@@ -26,13 +26,15 @@ func NewClient(user, password, host, port, db string) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) AddEvent(event models.CaffeineEvent) {
+func (c *Client) AddEvent(event models.CaffeineEvent) error {
 	t := event.Timestamp.Unix()
 	q := `INSERT INTO caffeine_event (timestamp, description, amount, cost) VALUES ($1, $2, $3, $4)`
 	_, err := c.db.Exec(q, t, event.Description, event.Amount, event.Cost)
 	if err != nil {
-		slog.Error(fmt.Sprintf("Failed to add event: %v", err))
+		slog.Error("Failed to add event", "error", err)
+		return fmt.Errorf("failed to add event: %w", err)
 	}
+	return nil
 }
 
 func (c *Client) GetEvents(start, end time.Time) []models.CaffeineEvent {

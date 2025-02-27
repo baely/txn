@@ -1,3 +1,4 @@
+// Package ibbitot provides a service that determines if Bailey is in the office
 package ibbitot
 
 import (
@@ -9,52 +10,103 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/baely/balance/pkg/model"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/baely/txn/internal/balance"
 )
 
-var loc, _ = time.LoadLocation("Australia/Melbourne")
+// Melbourne timezone for all operations
+var melbourneLocation = must(time.LoadLocation("Australia/Melbourne"))
 
-type ibbitot struct {
-	r chi.Router
-
-	cachedTransaction model.TransactionResource
-	indexPage         []byte
+// PresenceService tracks presence based on transaction events
+type PresenceService struct {
+	router             chi.Router
+	logger             *slog.Logger
+	mutex              sync.RWMutex
+	cachedTransaction  model.TransactionResource
+	indexPage          []byte
+	slackWebhookURL    string
+	transactionFilters []TransactionFilter
 }
 
-func New() *ibbitot {
+// Config contains configuration for the PresenceService
+type Config struct {
+	Logger          *slog.Logger
+	SlackWebhookURL string
+}
+
+// DefaultConfig returns the default service configuration
+func DefaultConfig() *Config {
+	return &Config{
+		Logger:          slog.Default(),
+		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK"),
+	}
+}
+
+// New creates a new PresenceService with default configuration
+func New() *PresenceService {
+	return NewWithConfig(DefaultConfig())
+}
+
+// NewWithConfig creates a new PresenceService with custom configuration
+func NewWithConfig(cfg *Config) *PresenceService {
+	s := &PresenceService{
+		logger:          cfg.Logger,
+		slackWebhookURL: strings.TrimSpace(cfg.SlackWebhookURL),
+		transactionFilters: []TransactionFilter{
+			AmountBetween(-700, -400),      // between -$7 and -$4
+			Weekday(),                       // on a weekday
+			NotForeign(),                    // not a foreign transaction
+			Category("restaurants-and-cafes"), // in the restaurants-and-cafes category
+		},
+	}
+
+	// Setup router with standard middleware
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
 
-	i := &ibbitot{}
+	// Register routes
+	r.Get("/raw", s.handleRawStatus)
+	r.Get("/", s.handleIndexPage)
+	r.Get("/favicon.ico", s.handleFavicon)
 
-	r.HandleFunc("/raw", i.rawHandler)
-	r.HandleFunc("/", i.indexHandler)
-	r.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Content-Type", "image/png")
-		w.Header().Add("Cache-Control", "public, max-age=604800, immutable")
-		w.Write(coffeeCup)
-	})
+	s.router = r
 
-	i.r = r
+	// Initialize page
+	s.refreshPage()
 
-	i.refreshPage()
-	go i.dailyPageRefresher()
+	// Start daily refresher
+	go s.runDailyRefresher()
 
-	return i
+	return s
 }
 
-func (i *ibbitot) Chi() chi.Router {
-	return i.r
+// Chi returns the router for this service
+func (s *PresenceService) Chi() chi.Router {
+	return s.router
 }
 
-func (i *ibbitot) HandleEvent(transactionEvent balance.TransactionEvent) {
-	i.updatePresence(transactionEvent.Transaction)
+// HandleEvent processes transaction events from the webhook service
+// It implements the balance.TransactionEventHandler interface
+func (s *PresenceService) HandleEvent(event balance.TransactionEvent) error {
+	s.logger.Info("Received transaction event", 
+		"description", event.Transaction.Attributes.Description,
+		"amount", event.Transaction.Attributes.Amount.Value,
+		"created_at", event.Transaction.Attributes.CreatedAt)
+	
+	s.processTransaction(event.Transaction)
+	return nil
 }
 
+// Embedded static assets
 var (
 	//go:embed index.html
 	indexHTML string
@@ -63,202 +115,252 @@ var (
 	coffeeCup []byte
 )
 
-// getNow returns the current time with timezone. helper function because i kept having skill issues with tz
-func getNow() time.Time {
-	return time.Now().In(loc)
+// handleRawStatus returns a simple yes/no response indicating presence
+func (s *PresenceService) handleRawStatus(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("Raw status request received")
+	
+	status := s.getPresenceStatus()
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Write([]byte(status))
 }
 
-func (i *ibbitot) rawHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	latestTransaction := i.getLatest()
-	w.Header().Add("Content-Type", "text/plain")
-	w.Write([]byte(presentString(latestTransaction)))
-}
-
-func (i *ibbitot) indexHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Request received")
+// handleIndexPage serves the main HTML page
+func (s *PresenceService) handleIndexPage(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("Index page request received")
+	
+	s.mutex.RLock()
+	page := s.indexPage
+	s.mutex.RUnlock()
+	
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
-	w.Write(i.indexPage)
+	w.Write(page)
 }
 
-func (i *ibbitot) updatePresence(transaction model.TransactionResource) {
-	if !check(transaction,
-		amountBetween(-700, -400), // between -$7 and -$4
-		//timeBetween(6, 12),                // between 6am and 12pm
-		weekday(),                         // on a weekday
-		notForeign(),                      // not a foreign transaction
-		category("restaurants-and-cafes"), // in the restaurants-and-cafes category
-	) {
-		slog.Warn("Transaction does not meet criteria")
+// handleFavicon serves the favicon
+func (s *PresenceService) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+	w.Write(coffeeCup)
+}
+
+// processTransaction determines if a transaction indicates presence
+func (s *PresenceService) processTransaction(transaction model.TransactionResource) {
+	// Apply all filters to the transaction
+	if !s.meetsAllCriteria(transaction) {
+		s.logger.Info("Transaction does not meet presence criteria", 
+			"description", transaction.Attributes.Description)
 		return
 	}
 
-	i.store(transaction)
+	s.storeTransaction(transaction)
 }
 
-func present(latestTransaction model.TransactionResource) bool {
-	return check(latestTransaction,
-		fresh(),
-	)
-}
-
-func presentString(latestTransaction model.TransactionResource) string {
-	if present(latestTransaction) {
-		return "yes"
-	}
-	return "no"
-}
-
-type decider func(model.TransactionResource) bool
-
-func check(transaction model.TransactionResource, deciders ...decider) bool {
-	for _, d := range deciders {
-		if !d(transaction) {
+// meetsAllCriteria checks if a transaction meets all filter criteria
+func (s *PresenceService) meetsAllCriteria(transaction model.TransactionResource) bool {
+	for _, filter := range s.transactionFilters {
+		if !filter(transaction) {
 			return false
 		}
 	}
 	return true
 }
 
-func amountBetween(minBaseUnits, maxBaseUnits int) decider {
+// getPresenceStatus returns the current presence status as a string
+func (s *PresenceService) getPresenceStatus() string {
+	s.mutex.RLock()
+	transaction := s.cachedTransaction
+	s.mutex.RUnlock()
+	
+	if isTransactionToday(transaction) {
+		return "yes"
+	}
+	return "no"
+}
+
+// storeTransaction stores a new transaction if it's more recent than the current one
+func (s *PresenceService) storeTransaction(transaction model.TransactionResource) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	
+	// Only update if the new transaction is more recent
+	if !s.cachedTransaction.Attributes.CreatedAt.IsZero() && 
+	   s.cachedTransaction.Attributes.CreatedAt.After(transaction.Attributes.CreatedAt) {
+		return
+	}
+	
+	s.logger.Info("Updating cached transaction", 
+		"description", transaction.Attributes.Description,
+		"created_at", transaction.Attributes.CreatedAt.Format(time.RFC3339))
+	
+	s.cachedTransaction = transaction
+	s.refreshPage()
+}
+
+// refreshPage updates the index page with current data
+func (s *PresenceService) refreshPage() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	
+	isPresent := isTransactionToday(s.cachedTransaction)
+	status := "no"
+	if isPresent {
+		status = "yes"
+	}
+	
+	description := s.getPresenceDescription(isPresent, s.cachedTransaction)
+	newPage := []byte(fmt.Sprintf(indexHTML, status, description))
+	
+	// Check if the page content has changed
+	changed := !bytes.Equal(s.indexPage, newPage)
+	s.indexPage = newPage
+	
+	// Notify Slack if the page changed
+	if changed && s.slackWebhookURL != "" {
+		go s.notifySlack(status, description)
+	}
+}
+
+// getPresenceDescription formats a description for the presence status
+func (s *PresenceService) getPresenceDescription(isPresent bool, transaction model.TransactionResource) string {
+	if !isPresent || transaction.Id == "" {
+		return ""
+	}
+	
+	amount := fmt.Sprintf("$%.2f", -float64(transaction.Attributes.Amount.ValueInBaseUnits)/100.0)
+	timeStr := transaction.Attributes.CreatedAt.In(melbourneLocation).Format(time.Kitchen)
+	details := fmt.Sprintf("%s at %s", transaction.Attributes.Description, timeStr)
+	
+	return fmt.Sprintf("<img src=\"/favicon.ico\" />%s on %s", amount, details)
+}
+
+// notifySlack sends a notification to Slack when presence status changes
+func (s *PresenceService) notifySlack(status, description string) {
+	if s.slackWebhookURL == "" {
+		return
+	}
+	
+	// Clean description for Slack
+	description = strings.Replace(description, "<img src=\"/favicon.ico\" />", "", -1)
+	
+	payload := struct {
+		Status      string `json:"status"`
+		Description string `json:"description"`
+	}{
+		Status:      status,
+		Description: description,
+	}
+	
+	data, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Error("Failed to marshal Slack payload", "error", err)
+		return
+	}
+	
+	resp, err := http.Post(s.slackWebhookURL, "application/json", bytes.NewReader(data))
+	if err != nil {
+		s.logger.Error("Failed to send Slack notification", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("Slack notification failed", "status", resp.Status)
+	}
+}
+
+// runDailyRefresher refreshes the page once per day at midnight
+func (s *PresenceService) runDailyRefresher() {
+	s.logger.Info("Starting daily page refresher")
+	
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	
+	for {
+		now := time.Now().In(melbourneLocation)
+		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 10, 0, melbourneLocation)
+		timeToWait := nextMidnight.Sub(now)
+		
+		s.logger.Debug("Daily refresher cycle", 
+			"current_time", now.Format(time.RFC3339),
+			"next_refresh", nextMidnight.Format(time.RFC3339),
+			"wait_duration", timeToWait.String())
+		
+		// Wait until midnight
+		time.Sleep(timeToWait)
+		
+		// Refresh the page to clear yesterday's status
+		s.refreshPage()
+		
+		// Short sleep to avoid potential race conditions
+		time.Sleep(time.Second)
+	}
+}
+
+// Helper functions and types
+
+// TransactionFilter is a function that determines if a transaction meets a specific criterion
+type TransactionFilter func(model.TransactionResource) bool
+
+// AmountBetween creates a filter that checks if the transaction amount is between the given values
+func AmountBetween(minBaseUnits, maxBaseUnits int) TransactionFilter {
 	return func(transaction model.TransactionResource) bool {
 		valueInBaseUnits := transaction.Attributes.Amount.ValueInBaseUnits
 		return valueInBaseUnits >= minBaseUnits && valueInBaseUnits <= maxBaseUnits
 	}
 }
 
-func timeBetween(minHour, maxHour int) decider {
+// TimeBetween creates a filter that checks if the transaction time is between specific hours
+func TimeBetween(minHour, maxHour int) TransactionFilter {
 	return func(transaction model.TransactionResource) bool {
-		hour := transaction.Attributes.CreatedAt.Hour()
+		hour := transaction.Attributes.CreatedAt.In(melbourneLocation).Hour()
 		return hour >= minHour && hour <= maxHour
 	}
 }
 
-func weekday() decider {
+// Weekday creates a filter that checks if the transaction occurred on a weekday
+func Weekday() TransactionFilter {
 	return func(transaction model.TransactionResource) bool {
-		day := transaction.Attributes.CreatedAt.Weekday()
-		return day >= 1 && day <= 5
+		day := transaction.Attributes.CreatedAt.In(melbourneLocation).Weekday()
+		return day >= time.Monday && day <= time.Friday
 	}
 }
 
-func fresh() decider {
-	return func(transaction model.TransactionResource) bool {
-		return isToday(transaction)
-	}
-}
-
-func notForeign() decider {
+// NotForeign creates a filter that checks if the transaction is not a foreign transaction
+func NotForeign() TransactionFilter {
 	return func(transaction model.TransactionResource) bool {
 		return transaction.Attributes.ForeignAmount == nil
 	}
 }
 
-func category(categoryId string) decider {
+// Category creates a filter that checks if the transaction belongs to a specific category
+func Category(categoryID string) TransactionFilter {
 	return func(transaction model.TransactionResource) bool {
 		if transaction.Relationships.Category.Data == nil {
 			return false
 		}
-
-		return transaction.Relationships.Category.Data.Id == categoryId
+		return transaction.Relationships.Category.Data.Id == categoryID
 	}
 }
 
-func isToday(transaction model.TransactionResource) bool {
-	now := getNow()
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	return transaction.Attributes.CreatedAt.After(midnight)
+// isTransactionToday checks if a transaction occurred today
+func isTransactionToday(transaction model.TransactionResource) bool {
+	if transaction.Id == "" {
+		return false
+	}
+	
+	now := time.Now().In(melbourneLocation)
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, melbourneLocation)
+	return transaction.Attributes.CreatedAt.In(melbourneLocation).After(midnight)
 }
 
-func (i *ibbitot) getLatest() model.TransactionResource {
-	return i.cachedTransaction
-}
-
+// must panics if the given error is not nil
 func must[T any](t T, err error) T {
 	if err != nil {
 		panic(err)
 	}
 	return t
-}
-
-func getReason(presence bool, t model.TransactionResource) string {
-	if presence {
-		amt := fmt.Sprintf("$%.2f", -float64(t.Attributes.Amount.ValueInBaseUnits)/100.0)
-		p1 := fmt.Sprintf("%s at %s", t.Attributes.Description, t.Attributes.CreatedAt.In(loc).Format(time.Kitchen))
-		return fmt.Sprintf("<img src=\"/favicon.ico\" />%s on %s", amt, p1)
-	}
-
-	return ""
-}
-
-func (i *ibbitot) store(transaction model.TransactionResource) {
-	if i.cachedTransaction.Attributes.CreatedAt.After(transaction.Attributes.CreatedAt) {
-		return
-	}
-	fmt.Printf("Cached transaction updated, %s on %s\n", transaction.Attributes.Description, transaction.Attributes.CreatedAt.Format(time.RFC1123))
-	i.cachedTransaction = transaction
-	i.refreshPage()
-}
-
-func (i *ibbitot) refreshPage() {
-	latestTransaction := i.getLatest()
-	title := presentString(latestTransaction)
-	desc := getReason(present(latestTransaction), latestTransaction)
-	replaced := i.replacePage([]byte(fmt.Sprintf(indexHTML, title, desc)))
-	if replaced {
-		fireSlack(title, desc)
-	}
-}
-
-func (i *ibbitot) replacePage(b []byte) bool {
-	old := i.indexPage
-	i.indexPage = b
-	return !bytes.Equal(old, b) // return true if the page was updated
-}
-
-func fireSlack(title, desc string) {
-	u := os.Getenv("SLACK_WEBHOOK")
-	u = strings.TrimSpace(u)
-	type req struct {
-		Status      string `json:"status"`
-		Description string `json:"description"`
-	}
-	desc = strings.Replace(desc, "<img src=\"/favicon.ico\" />", "", -1)
-	b, _ := json.Marshal(req{Status: title, Description: desc})
-	resp, err := http.DefaultClient.Post(u, "application/json", bytes.NewReader(b))
-	if err != nil {
-		slog.Error("Error sending slack message", "error", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		slog.Error("Error sending slack message", "status", resp.Status)
-		return
-	}
-}
-
-func (i *ibbitot) dailyPageRefresher() {
-	ticker := make(chan time.Time)
-	go runDailyTicker(ticker)
-	for {
-		<-ticker
-		i.refreshPage()
-	}
-}
-
-func runDailyTicker(ticker chan<- time.Time) {
-	for {
-		now := getNow()
-		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-		duration := nextMidnight.Sub(now)
-		slog.Warn(fmt.Sprintf("Current time: %s. Sleeping for: %s.", now, duration))
-		time.Sleep(duration)
-		// Sleep for a little longer
-		time.Sleep(500 * time.Millisecond)
-		ticker <- getNow()
-	}
 }

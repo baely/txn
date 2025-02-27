@@ -1,47 +1,87 @@
+// Package tracker provides caffeine consumption tracking services
 package tracker
 
 import (
+	"log/slog"
 	"os"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/baely/txn/internal/balance"
+	"github.com/baely/txn/internal/common/errors"
 	"github.com/baely/txn/internal/tracker/database"
 	"github.com/baely/txn/internal/tracker/server"
 )
 
-type tracker struct {
-	db *database.Client
-
-	transactionHandler balance.TransactionEventHandler
-	chiRouter          chi.Router
+// TrackerService tracks caffeine consumption events
+type TrackerService struct {
+	db        *database.Client
+	router    chi.Router
+	logger    *slog.Logger
 }
 
-func New() *tracker {
-	dbUser := os.Getenv("DB_USER")
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbName := os.Getenv("DB_NAME")
+// Config contains configuration for the TrackerService
+type Config struct {
+	DBUser     string
+	DBPassword string
+	DBHost     string
+	DBPort     string
+	DBName     string
+	Logger     *slog.Logger
+}
 
-	db, err := database.NewClient(dbUser, dbPassword, dbHost, dbPort, dbName)
+// DefaultConfig returns the default service configuration
+func DefaultConfig() *Config {
+	return &Config{
+		DBUser:     os.Getenv("DB_USER"),
+		DBPassword: os.Getenv("DB_PASSWORD"),
+		DBHost:     os.Getenv("DB_HOST"),
+		DBPort:     os.Getenv("DB_PORT"),
+		DBName:     os.Getenv("DB_NAME"),
+		Logger:     slog.Default(),
+	}
+}
+
+// New creates a new TrackerService with default configuration
+func New() *TrackerService {
+	return NewWithConfig(DefaultConfig())
+}
+
+// NewWithConfig creates a new TrackerService with custom configuration
+func NewWithConfig(cfg *Config) *TrackerService {
+	db, err := database.NewClient(
+		cfg.DBUser,
+		cfg.DBPassword,
+		cfg.DBHost,
+		cfg.DBPort,
+		cfg.DBName,
+	)
 	if err != nil {
-		panic(err)
+		errors.Must(err) // This will panic with database connection errors
 	}
 
-	t := &tracker{
-		db: db,
+	t := &TrackerService{
+		db:     db,
+		logger: cfg.Logger,
 	}
 
-	t.chiRouter = server.NewServer(db)
+	// Initialize router
+	t.router = server.NewServer(db)
 
 	return t
 }
 
-func (t *tracker) Chi() chi.Router {
-	return nil
+// Chi returns the router for this service
+func (t *TrackerService) Chi() chi.Router {
+	return t.router
 }
 
-func (t *tracker) HandleEvent(transactionEvent balance.TransactionEvent) {
-	server.ProcessEvent(t.db, transactionEvent)
+// HandleEvent processes transaction events from the webhook service
+// It implements the balance.TransactionEventHandler interface
+func (t *TrackerService) HandleEvent(event balance.TransactionEvent) error {
+	t.logger.Info("Processing transaction event",
+		"description", event.Transaction.Attributes.Description,
+		"amount", event.Transaction.Attributes.Amount.Value)
+		
+	return server.ProcessEvent(t.db, event)
 }

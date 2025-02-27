@@ -1,27 +1,47 @@
+// Package main is the entry point for the TXN application
 package main
 
 import (
+	"log/slog"
+	"os"
+
 	"github.com/baely/txn/internal/balance"
+	"github.com/baely/txn/internal/common/errors"
+	"github.com/baely/txn/internal/common/logger"
 	"github.com/baely/txn/internal/ibbitot"
 	"github.com/baely/txn/internal/server"
 	"github.com/baely/txn/internal/tracker"
 )
 
 func main() {
+	// Initialize logger
+	log := logger.New(
+		logger.WithLevel(logger.LevelInfo),
+	)
+	slog.SetDefault(log)
+
+	// Initialize server
 	s := server.New()
 
-	serviceWebhook := balance.New()
-	serviceIbbitot := ibbitot.New()
-	serviceTracker := tracker.New()
+	// Initialize services
+	webhookService := balance.New()
+	presenceService := ibbitot.New()
+	trackerService := tracker.New()
 
-	serviceWebhook.RegisterHandler(serviceIbbitot)
-	serviceWebhook.RegisterHandler(serviceTracker)
+	// Register event handlers
+	webhookService.RegisterHandler(presenceService)
+	webhookService.RegisterHandler(trackerService)
 
-	s.RegisterDomain("events.baileys.dev", serviceWebhook.Chi())
-	s.RegisterDomain("isbaileybutlerintheoffice.today", serviceIbbitot.Chi())
-	s.RegisterDomain("baileyneeds.coffee", serviceTracker.Chi())
+	// Register domain handlers
+	s.RegisterDomain("events.baileys.dev", webhookService.Chi())
+	s.RegisterDomain("isbaileybutlerintheoffice.today", presenceService.Chi())
+	s.RegisterDomain("baileyneeds.coffee", trackerService.Chi())
 
+	// Start server
+	log.Info("Starting server")
 	if err := s.ListenAndServe(); err != nil {
-		panic(err)
+		log.Error("Server failed", "error", err)
+		errors.Must(err) // This will panic
+		os.Exit(1)
 	}
 }

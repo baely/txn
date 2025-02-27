@@ -9,22 +9,24 @@ import (
 	"github.com/baely/txn/internal/tracker/models"
 )
 
-func ProcessEvent(db *database.Client, event balance.TransactionEvent) {
+func ProcessEvent(db *database.Client, event balance.TransactionEvent) error {
 	if event.Transaction.Relationships.Category.Data == nil {
-		return
+		return nil
 	}
 
 	category := event.Transaction.Relationships.Category.Data.Id
 
 	switch category {
 	case "restaurants-and-cafes":
-		transformRestaurantEvent(db, event)
+		return transformRestaurantEvent(db, event)
 	case "groceries":
-		transformGroceryEvent(db, event)
+		return transformGroceryEvent(db, event)
 	}
+	
+	return nil
 }
 
-func transformRestaurantEvent(db *database.Client, event balance.TransactionEvent) {
+func transformRestaurantEvent(db *database.Client, event balance.TransactionEvent) error {
 	desc := event.Transaction.Attributes.Description
 	amt := event.Transaction.Attributes.Amount.ValueInBaseUnits
 	if amt < 0 {
@@ -54,7 +56,7 @@ func transformRestaurantEvent(db *database.Client, event balance.TransactionEven
 	key := lookupKey{Description: desc, Cost: amt}
 	amount, ok := lookup[key]
 	if !ok {
-		return
+		return nil
 	}
 
 	caffeineEvent := models.CaffeineEvent{
@@ -64,10 +66,10 @@ func transformRestaurantEvent(db *database.Client, event balance.TransactionEven
 		Cost:        amt,
 	}
 
-	db.AddEvent(caffeineEvent)
+	return db.AddEvent(caffeineEvent)
 }
 
-func transformGroceryEvent(db *database.Client, event balance.TransactionEvent) {
+func transformGroceryEvent(db *database.Client, event balance.TransactionEvent) error {
 	raw := event.Transaction.Attributes.RawText
 	amt := event.Transaction.Attributes.Amount.ValueInBaseUnits
 	if amt < 0 {
@@ -79,19 +81,19 @@ func transformGroceryEvent(db *database.Client, event balance.TransactionEvent) 
 
 	if raw == nil {
 		fmt.Println("Raw text is nil")
-		return
+		return nil
 	}
 
 	rawText := strings.ToUpper(*raw)
 
 	if !strings.Contains(rawText, "WOOLWORTHS") || !strings.Contains(rawText, "DOCK") {
 		fmt.Println("Raw text does not contain Woolworths Dock")
-		return
+		return nil
 	}
 
 	if amt < 200 || amt > 700 {
 		fmt.Println("Amount is not between 200 and 700")
-		return
+		return nil
 	}
 
 	caffeineEvent := models.CaffeineEvent{
@@ -101,5 +103,5 @@ func transformGroceryEvent(db *database.Client, event balance.TransactionEvent) 
 		Cost:        amt,
 	}
 
-	db.AddEvent(caffeineEvent)
+	return db.AddEvent(caffeineEvent)
 }

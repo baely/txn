@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: txn-app
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    environment:
+      # Up Banking API
+      - UP_ACCESS_TOKEN=${UP_ACCESS_TOKEN}
+      - UP_WEBHOOK_SECRET=${UP_WEBHOOK_SECRET}
+      # Notifications
+      - SLACK_WEBHOOK=${SLACK_WEBHOOK}
+      # External PostgreSQL
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+
+networks:
+  default:
+    driver: bridge
