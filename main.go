@@ -36,6 +36,8 @@ func main() {
 	s.RegisterDomain("events.baileys.dev", webhookService.Chi())
 	s.RegisterDomain("isbaileybutlerintheoffice.today", presenceService.Chi())
 	s.RegisterDomain("baileyneeds.coffee", trackerService.Chi())
+	s.RegisterDomain("caffeine-api.baileys.dev", trackerService.Chi())
+	s.RegisterDomain("caffeine.baileys.app", trackerService.Chi())
 
 	// Start server
 	log.Info("Starting server")

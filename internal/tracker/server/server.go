@@ -64,7 +64,7 @@ func (s *Server) registerApiEndpoints() chi.Router {
 		w.Write([]byte(appJS))
 	})
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Content-Type", "text/html")
+		w.Header().Add("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(indexHTML))
 	})
 

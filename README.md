@@ -76,6 +76,72 @@ internal/
   └── server/        # HTTP server
 ```
 
+## System Architecture
+
+The following diagram shows how components interact within the system:
+
+```mermaid
+flowchart LR
+    %% External Systems
+    UpBanking[Up Banking API] -->|sends webhooks| BalanceService
+    PostgreSQL[(PostgreSQL DB)] <-->|stores/retrieves events| TrackerService
+    PresenceService -->|sends notifications| Slack[Slack Webhook]
+    
+    %% Main Services and Data Flow
+    subgraph TxnMonolith[TXN Monolith]
+      Router[Chi Router\ninternal/server]
+      BalanceService[Balance Service\ninternal/balance]
+      PresenceService[Presence Service\ninternal/ibbitot]
+      TrackerService[Tracker Service\ninternal/tracker]
+      
+      %% Internal routing
+      Router -->|routes by domain| BalanceService
+      Router -->|routes by domain| PresenceService
+      Router -->|routes by domain| TrackerService
+    end
+    
+    %% Service Interactions
+    BalanceService -->|dispatches events| PresenceService
+    BalanceService -->|dispatches events| TrackerService
+    BalanceService -->|fetches details| UpBanking
+    
+    %% Web Interfaces
+    PresenceService -->|serves status page| WebUI1[Web UI\nisbaileybutlerintheoffice.today]
+    TrackerService -->|displays consumption| WebUI2[Web UI\nbaileyneeds.coffee]
+    
+    %% External requests
+    User((User)) -->|submits requests| Router
+    
+    %% Styles
+    classDef external fill:#f96,stroke:#333,stroke-width:2px
+    classDef service fill:#58f,stroke:#333,stroke-width:2px
+    classDef router fill:#5d8,stroke:#333,stroke-width:2px
+    classDef monolith fill:#eee,stroke:#333,stroke-width:1px
+    
+    class UpBanking,PostgreSQL,Slack,User external
+    class BalanceService,PresenceService,TrackerService service
+    class Router router
+    class TxnMonolith monolith
+```
+
+### Data Flow
+
+1. **Up Banking → Balance Service**: 
+   - Up Banking sends transaction webhooks to the Balance Service
+   - Balance Service validates and enriches transaction data
+
+2. **Balance Service → Service Handlers**:
+   - Distributes `TransactionEvent` to registered services
+   - Each service filters relevant transactions
+
+3. **Presence Service**:
+   - Determines office presence based on coffee purchases
+   - Updates web UI and sends Slack notifications
+
+4. **Tracker Service**:
+   - Records caffeine consumption in PostgreSQL
+   - Calculates caffeine levels and provides visualization
+
 ## Development
 
 See [CLAUDE.md](CLAUDE.md) for development guidelines.
