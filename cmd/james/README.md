@@ -45,4 +45,25 @@ Set these environment variables:
 |----------|-------------|
 | `MONZO_ACCESS_TOKEN` | Monzo Banking API token |
 | `MONZO_WEBHOOK_SECRET` | Webhook validation secret |
+| `MONZO_WEBHOOK_URL` | Full URL where Monzo should send webhooks (e.g., `https://events.james.dev/event`) |
 | `SLACK_WEBHOOK` | Slack notification URL |
+
+## Webhook Management
+
+The service automatically manages webhooks with Monzo at startup:
+
+1. If `MONZO_WEBHOOK_URL` is defined, the service checks all Monzo accounts
+2. For each account, it verifies if a webhook pointing to your URL is already registered
+3. If no matching webhook exists, it automatically registers one
+
+You can also manage webhooks manually using the API:
+
+- **List webhooks**: `GET /webhooks?account_id=acc_123456789`
+- **Register webhook**: `POST /webhooks/register` with payload:
+  ```json
+  {
+    "account_id": "acc_123456789",
+    "url": "https://events.james.dev/event"
+  }
+  ```
+- **Delete webhook**: `DELETE /webhooks/webhook_id`

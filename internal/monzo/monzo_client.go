@@ -178,6 +178,62 @@ func (c *MonzoClient) GetMerchant(ctx context.Context, merchantID string) (Merch
 	return response.Merchant, nil
 }
 
+// Webhook represents a Monzo webhook
+type Webhook struct {
+	ID          string    `json:"id"`
+	AccountID   string    `json:"account_id"`
+	URL         string    `json:"url"`
+	Created     time.Time `json:"created"`
+}
+
+// ListWebhooks retrieves all webhooks registered for the account
+func (c *MonzoClient) ListWebhooks(ctx context.Context, accountID string) ([]Webhook, error) {
+	var response struct {
+		Webhooks []Webhook `json:"webhooks"`
+	}
+
+	endpoint := fmt.Sprintf("webhooks?account_id=%s", accountID)
+	err := c.request(ctx, http.MethodGet, endpoint, nil, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.Webhooks, nil
+}
+
+// RegisterWebhook registers a new webhook for an account
+func (c *MonzoClient) RegisterWebhook(ctx context.Context, accountID, url string) (Webhook, error) {
+	var response struct {
+		Webhook Webhook `json:"webhook"`
+	}
+
+	// Prepare payload
+	type payload struct {
+		AccountID string `json:"account_id"`
+		URL       string `json:"url"`
+	}
+	data, err := json.Marshal(payload{
+		AccountID: accountID,
+		URL:       url,
+	})
+	if err != nil {
+		return Webhook{}, errors.Wrap(err, "failed to marshal webhook payload")
+	}
+
+	err = c.request(ctx, http.MethodPost, "webhooks", data, &response)
+	if err != nil {
+		return Webhook{}, err
+	}
+
+	return response.Webhook, nil
+}
+
+// DeleteWebhook deletes a webhook by ID
+func (c *MonzoClient) DeleteWebhook(ctx context.Context, webhookID string) error {
+	endpoint := fmt.Sprintf("webhooks/%s", webhookID)
+	return c.request(ctx, http.MethodDelete, endpoint, nil, nil)
+}
+
 // ValidateWebhookEvent validates the signature of a webhook event
 func ValidateWebhookEvent(payload []byte, signature string) bool {
 	sig, _ := hex.DecodeString(signature)

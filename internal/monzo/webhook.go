@@ -23,18 +23,21 @@ type WebhookService struct {
 	router              chi.Router
 	transactionHandlers []TransactionEventHandler
 	logger              *slog.Logger
+	webhookURL          string
 }
 
 // Config contains configuration for the WebhookService
 type WebhookConfig struct {
 	MonzoAccessToken string
 	Logger           *slog.Logger
+	WebhookURL       string
 }
 
 // New creates a new WebhookService with default configuration
 func NewWebhook() *WebhookService {
 	return NewWebhookWithConfig(&WebhookConfig{
 		MonzoAccessToken: os.Getenv("MONZO_ACCESS_TOKEN"),
+		WebhookURL:       os.Getenv("MONZO_WEBHOOK_URL"),
 		Logger:           slog.Default(),
 	})
 }
@@ -45,6 +48,7 @@ func NewWebhookWithConfig(cfg *WebhookConfig) *WebhookService {
 		monzoClient: NewMonzoClient(cfg.MonzoAccessToken),
 		rawChan:     make(chan []byte, 100), // Buffered channel to handle bursts
 		logger:      cfg.Logger,
+		webhookURL:  cfg.WebhookURL,
 	}
 
 	// Setup router with standard middleware
@@ -57,11 +61,19 @@ func NewWebhookWithConfig(cfg *WebhookConfig) *WebhookService {
 	// Register routes
 	r.Post("/monzo/event", service.handleWebhook)
 	r.Post("/event", service.handleWebhook)
+	r.Get("/webhooks", service.listWebhooks)
+	r.Post("/webhooks/register", service.registerWebhook)
+	r.Delete("/webhooks/{id}", service.deleteWebhook)
 
 	service.router = r
 
 	// Start processing goroutine
 	go service.processEvents()
+
+	// Set up webhooks if URL is provided
+	if service.webhookURL != "" {
+		go service.setupWebhooks()
+	}
 
 	return service
 }
@@ -166,4 +178,155 @@ func parseEvent(value []byte) MonzoWebhookEvent {
 		slog.Error("Failed to parse webhook event", "error", err)
 	}
 	return event
+}
+
+// setupWebhooks is responsible for ensuring webhooks are registered
+func (s *WebhookService) setupWebhooks() {
+	ctx := context.Background()
+	
+	// Get all accounts
+	accounts, err := s.getAccounts(ctx)
+	if err != nil {
+		s.logger.Error("Failed to fetch accounts", "error", err)
+		return
+	}
+	
+	for _, account := range accounts {
+		if err := s.ensureWebhookForAccount(ctx, account.ID); err != nil {
+			s.logger.Error("Failed to set up webhook for account", "account_id", account.ID, "error", err)
+		} else {
+			s.logger.Info("Webhook configured for account", "account_id", account.ID)
+		}
+	}
+}
+
+// getAccounts fetches all available accounts
+func (s *WebhookService) getAccounts(ctx context.Context) ([]Account, error) {
+	var response struct {
+		Accounts []struct {
+			ID          string    `json:"id"`
+			Created     time.Time `json:"created"`
+			Description string    `json:"description"`
+			Type        string    `json:"type"`
+			Currency    string    `json:"currency"`
+		} `json:"accounts"`
+	}
+
+	err := s.monzoClient.request(ctx, http.MethodGet, "accounts", nil, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	var accounts []Account
+	for _, acc := range response.Accounts {
+		// Only include active accounts (not closed)
+		accounts = append(accounts, Account{
+			ID:       acc.ID,
+			Created:  acc.Created,
+			Currency: acc.Currency,
+		})
+	}
+
+	return accounts, nil
+}
+
+// ensureWebhookForAccount ensures the account has our webhook registered
+func (s *WebhookService) ensureWebhookForAccount(ctx context.Context, accountID string) error {
+	if s.webhookURL == "" {
+		return errors.New("webhook URL not configured")
+	}
+
+	// List existing webhooks
+	webhooks, err := s.monzoClient.ListWebhooks(ctx, accountID)
+	if err != nil {
+		return errors.Wrap(err, "failed to list webhooks")
+	}
+
+	// Check if our webhook is already registered
+	for _, webhook := range webhooks {
+		if webhook.URL == s.webhookURL {
+			s.logger.Info("Webhook already registered", "webhook_id", webhook.ID, "url", webhook.URL)
+			return nil
+		}
+	}
+
+	// If not found, register a new webhook
+	webhook, err := s.monzoClient.RegisterWebhook(ctx, accountID, s.webhookURL)
+	if err != nil {
+		return errors.Wrap(err, "failed to register webhook")
+	}
+
+	s.logger.Info("New webhook registered", "webhook_id", webhook.ID, "url", webhook.URL)
+	return nil
+}
+
+// listWebhooks handles requests to list all webhooks for an account
+func (s *WebhookService) listWebhooks(w http.ResponseWriter, r *http.Request) {
+	accountID := r.URL.Query().Get("account_id")
+	if accountID == "" {
+		commonHttp.Error(w, errors.New("account_id query parameter is required"), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	webhooks, err := s.monzoClient.ListWebhooks(ctx, accountID)
+	if err != nil {
+		s.logger.Error("Failed to list webhooks", "account_id", accountID, "error", err)
+		commonHttp.Error(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	commonHttp.Success(w, map[string]interface{}{
+		"webhooks": webhooks,
+	})
+}
+
+// registerWebhook handles requests to register a new webhook
+func (s *WebhookService) registerWebhook(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AccountID string `json:"account_id"`
+		URL       string `json:"url"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		commonHttp.Error(w, errors.Wrap(err, "invalid request body"), http.StatusBadRequest)
+		return
+	}
+
+	if request.AccountID == "" || request.URL == "" {
+		commonHttp.Error(w, errors.New("account_id and url are required"), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	webhook, err := s.monzoClient.RegisterWebhook(ctx, request.AccountID, request.URL)
+	if err != nil {
+		s.logger.Error("Failed to register webhook", "account_id", request.AccountID, "url", request.URL, "error", err)
+		commonHttp.Error(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	commonHttp.Success(w, map[string]interface{}{
+		"webhook": webhook,
+	})
+}
+
+// deleteWebhook handles requests to delete a webhook
+func (s *WebhookService) deleteWebhook(w http.ResponseWriter, r *http.Request) {
+	webhookID := chi.URLParam(r, "id")
+	if webhookID == "" {
+		commonHttp.Error(w, errors.New("webhook id is required"), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	if err := s.monzoClient.DeleteWebhook(ctx, webhookID); err != nil {
+		s.logger.Error("Failed to delete webhook", "webhook_id", webhookID, "error", err)
+		commonHttp.Error(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	commonHttp.Success(w, map[string]string{
+		"status": "webhook deleted",
+	})
 }

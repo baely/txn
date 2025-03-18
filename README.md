@@ -98,6 +98,7 @@ docker-compose up -d
 |----------|-------------|
 | `MONZO_ACCESS_TOKEN` | Monzo Banking API token |
 | `MONZO_WEBHOOK_SECRET` | Webhook validation secret |
+| `MONZO_WEBHOOK_URL` | Full URL where Monzo should send webhooks (e.g., `https://events.james.dev/event`) |
 | `SLACK_WEBHOOK` | Slack notification URL |
 
 ## Project Structure
