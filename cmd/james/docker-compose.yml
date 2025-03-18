@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  james-app:
+    build:
+      context: ../..
+      dockerfile: cmd/james/Dockerfile
+    container_name: james-app
+    restart: unless-stopped
+    ports:
+      - "8086:8080"
+    environment:
+      # Monzo API
+      - MONZO_ACCESS_TOKEN=${MONZO_ACCESS_TOKEN}
+      - MONZO_WEBHOOK_SECRET=${MONZO_WEBHOOK_SECRET}
+      # Notifications
+      - SLACK_WEBHOOK=${SLACK_WEBHOOK}
+
+networks:
+  default:
+    driver: bridge
