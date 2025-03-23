@@ -43,14 +43,14 @@ func (c *MonzoClient) request(ctx context.Context, method, endpoint string, payl
 		body = bytes.NewBuffer(nil)
 	}
 
-	uri := fmt.Sprintf("%s/%s", monzoBaseURI, endpoint)
+	uri := monzoBaseURI + "/" + endpoint
 
 	req, err := http.NewRequestWithContext(ctx, method, uri, body)
 	if err != nil {
 		return errors.Wrap(err, "failed to create request")
 	}
 
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", c.accessToken))
+	req.Header.Add("Authorization", "Bearer "+c.accessToken)
 	if method == http.MethodPost || method == http.MethodPut {
 		req.Header.Add("Content-Type", "application/json")
 	}
@@ -136,7 +136,7 @@ func (c *MonzoClient) GetTransaction(ctx context.Context, transactionID string) 
 		} `json:"transaction"`
 	}
 
-	endpoint := fmt.Sprintf("transactions/%s", transactionID)
+	endpoint := "transactions/" + transactionID
 	err := c.request(ctx, http.MethodGet, endpoint, nil, &response)
 	if err != nil {
 		return Transaction{}, err
@@ -169,7 +169,7 @@ func (c *MonzoClient) GetMerchant(ctx context.Context, merchantID string) (Merch
 		Merchant Merchant `json:"merchant"`
 	}
 
-	endpoint := fmt.Sprintf("merchants/%s", merchantID)
+	endpoint := "merchants/" + merchantID
 	err := c.request(ctx, http.MethodGet, endpoint, nil, &response)
 	if err != nil {
 		return Merchant{}, err
@@ -180,10 +180,10 @@ func (c *MonzoClient) GetMerchant(ctx context.Context, merchantID string) (Merch
 
 // Webhook represents a Monzo webhook
 type Webhook struct {
-	ID          string    `json:"id"`
-	AccountID   string    `json:"account_id"`
-	URL         string    `json:"url"`
-	Created     time.Time `json:"created"`
+	ID        string    `json:"id"`
+	AccountID string    `json:"account_id"`
+	URL       string    `json:"url"`
+	Created   time.Time `json:"created"`
 }
 
 // ListWebhooks retrieves all webhooks registered for the account
@@ -192,7 +192,7 @@ func (c *MonzoClient) ListWebhooks(ctx context.Context, accountID string) ([]Web
 		Webhooks []Webhook `json:"webhooks"`
 	}
 
-	endpoint := fmt.Sprintf("webhooks?account_id=%s", accountID)
+	endpoint := "webhooks?account_id=" + accountID
 	err := c.request(ctx, http.MethodGet, endpoint, nil, &response)
 	if err != nil {
 		return nil, err
@@ -230,7 +230,7 @@ func (c *MonzoClient) RegisterWebhook(ctx context.Context, accountID, url string
 
 // DeleteWebhook deletes a webhook by ID
 func (c *MonzoClient) DeleteWebhook(ctx context.Context, webhookID string) error {
-	endpoint := fmt.Sprintf("webhooks/%s", webhookID)
+	endpoint := "webhooks/" + webhookID
 	return c.request(ctx, http.MethodDelete, endpoint, nil, nil)
 }
 
