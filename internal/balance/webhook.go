@@ -58,7 +58,7 @@ func NewWithConfig(cfg *Config) *WebhookService {
 	// Register routes
 	r.Post("/up/event", service.handleWebhook)
 	r.Post("/event", service.handleWebhook)
-	
+
 	service.router = r
 
 	// Start processing goroutine
@@ -96,7 +96,7 @@ func (s *WebhookService) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Queue event for processing
 	s.rawChan <- body
-	
+
 	// Return success immediately
 	commonHttp.Success(w, map[string]string{"status": "accepted"})
 }

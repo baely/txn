@@ -15,9 +15,9 @@ import (
 
 // TrackerService tracks caffeine consumption events
 type TrackerService struct {
-	db        *database.Client
-	router    chi.Router
-	logger    *slog.Logger
+	db     *database.Client
+	router chi.Router
+	logger *slog.Logger
 }
 
 // Config contains configuration for the TrackerService
@@ -82,6 +82,6 @@ func (t *TrackerService) HandleEvent(event balance.TransactionEvent) error {
 	t.logger.Info("Processing transaction event",
 		"description", event.Transaction.Attributes.Description,
 		"amount", event.Transaction.Attributes.Amount.Value)
-		
+
 	return server.ProcessEvent(t.db, event)
 }

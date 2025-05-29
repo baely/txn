@@ -119,7 +119,7 @@ var (
 func (s *PresenceService) handleRawStatus(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Raw status request received")
 
-	status := s.getPresenceStatus()
+	status := s.GetPresenceStatus()
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Write([]byte(status))
@@ -169,8 +169,8 @@ func (s *PresenceService) meetsAllCriteria(transaction model.TransactionResource
 	return true
 }
 
-// getPresenceStatus returns the current presence status as a string
-func (s *PresenceService) getPresenceStatus() string {
+// GetPresenceStatus returns the current presence status as a string
+func (s *PresenceService) GetPresenceStatus() string {
 	s.mutex.RLock()
 	transaction := s.cachedTransaction
 	s.mutex.RUnlock()

@@ -22,7 +22,7 @@ func ProcessEvent(db *database.Client, event balance.TransactionEvent) error {
 	case "groceries":
 		return transformGroceryEvent(db, event)
 	}
-	
+
 	return nil
 }
 

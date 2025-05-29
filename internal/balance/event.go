@@ -24,7 +24,7 @@ type TransactionEventHandler interface {
 type EventService interface {
 	// RegisterHandler registers a handler for transaction events
 	RegisterHandler(handler TransactionEventHandler)
-	
+
 	// ProcessEvent processes a transaction event
 	ProcessEvent(ctx context.Context, event TransactionEvent) error
 }
