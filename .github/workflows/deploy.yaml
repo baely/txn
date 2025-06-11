@@ -1,0 +1,12 @@
+name: Deploy
+
+on:
+  pull_request:
+
+jobs:
+  deploy:
+    name: Trigger
+    uses: baely/infra/.github/workflows/deploy.yaml@workflow
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.ref }}
