@@ -1,0 +1,42 @@
+name: Stage Infra
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    name: Build Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24
+      - name: Run Builder
+        env:
+          COACH_AUTH_TOKEN: ${{ secrets.COACH_AUTH_TOKEN }}
+        run: |
+          go mod download
+          go get github.com/baely/infra/tools/cmd/coachassistant
+          go install github.com/baely/infra/tools/cmd/coachassistant
+          coachassistant assemble \
+          --repo txn \
+          --ref ${{ github.sha }} \
+          --image txn \
+          --tag latest \
+          --dockerfile Dockerfile \
+          --context .
+
+  stage:
+    name: Stage Infra
+    uses: baely/infra/.github/workflows/stage.yaml@main
+    needs:
+      - build
+    with:
+      repo: txn
+      ref: ${{ github.sha }}
+    secrets:
+      INFRA_APP_ID: ${{ secrets.INFRA_APP_ID }}
+      INFRA_APP_SECRET: ${{ secrets.INFRA_APP_SECRET }}
