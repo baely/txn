@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -32,19 +33,26 @@ type PresenceService struct {
 	indexPage          []byte
 	slackWebhookURL    string
 	transactionFilters []TransactionFilter
+	cacheFilePath      string
 }
 
 // Config contains configuration for the PresenceService
 type Config struct {
 	Logger          *slog.Logger
 	SlackWebhookURL string
+	CacheDir        string
 }
 
 // DefaultConfig returns the default service configuration
 func DefaultConfig() *Config {
+	cacheDir := os.Getenv("CACHE_DIR")
+	if cacheDir == "" {
+		cacheDir = "/data"
+	}
 	return &Config{
 		Logger:          slog.Default(),
 		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK"),
+		CacheDir:        cacheDir,
 	}
 }
 
@@ -58,6 +66,7 @@ func NewWithConfig(cfg *Config) *PresenceService {
 	s := &PresenceService{
 		logger:          cfg.Logger,
 		slackWebhookURL: strings.TrimSpace(cfg.SlackWebhookURL),
+		cacheFilePath:   filepath.Join(cfg.CacheDir, "ibbitot-cache.json"),
 		transactionFilters: []TransactionFilter{
 			AmountBetween(-700, -400),         // between -$7 and -$4
 			Weekday(),                         // on a weekday
@@ -79,6 +88,9 @@ func NewWithConfig(cfg *Config) *PresenceService {
 	r.Get("/favicon.ico", s.handleFavicon)
 
 	s.router = r
+
+	// Load cached transaction from file if it exists
+	s.loadCacheFromFile()
 
 	// Initialize page
 	s.refreshPage()
@@ -198,6 +210,9 @@ func (s *PresenceService) storeTransaction(transaction model.TransactionResource
 
 	s.cachedTransaction = transaction
 	s.refreshPageWithoutLock()
+
+	// Persist cache to file asynchronously
+	go s.saveCacheToFile()
 }
 
 // refreshPage updates the index page with current data
@@ -376,4 +391,76 @@ func must[T any](t T, err error) T {
 		panic(err)
 	}
 	return t
+}
+
+// cacheData represents the structure of the cached data file
+type cacheData struct {
+	Transaction model.TransactionResource `json:"transaction"`
+	UpdatedAt   time.Time                 `json:"updated_at"`
+}
+
+// saveCacheToFile persists the cached transaction to disk
+func (s *PresenceService) saveCacheToFile() {
+	s.mutex.RLock()
+	transaction := s.cachedTransaction
+	s.mutex.RUnlock()
+
+	// Skip saving if there's no transaction to save
+	if transaction.Id == "" {
+		return
+	}
+
+	cache := cacheData{
+		Transaction: transaction,
+		UpdatedAt:   time.Now(),
+	}
+
+	data, err := json.Marshal(cache)
+	if err != nil {
+		s.logger.Error("Failed to marshal cache data", "error", err)
+		return
+	}
+
+	// Ensure the directory exists
+	dir := filepath.Dir(s.cacheFilePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		s.logger.Error("Failed to create cache directory", "error", err, "path", dir)
+		return
+	}
+
+	// Write the file
+	if err := os.WriteFile(s.cacheFilePath, data, 0644); err != nil {
+		s.logger.Error("Failed to write cache file", "error", err, "path", s.cacheFilePath)
+		return
+	}
+
+	s.logger.Info("Cache saved to file", "path", s.cacheFilePath)
+}
+
+// loadCacheFromFile loads the cached transaction from disk
+func (s *PresenceService) loadCacheFromFile() {
+	data, err := os.ReadFile(s.cacheFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.logger.Info("No cache file found, starting fresh", "path", s.cacheFilePath)
+		} else {
+			s.logger.Error("Failed to read cache file", "error", err, "path", s.cacheFilePath)
+		}
+		return
+	}
+
+	var cache cacheData
+	if err := json.Unmarshal(data, &cache); err != nil {
+		s.logger.Error("Failed to unmarshal cache data", "error", err)
+		return
+	}
+
+	s.mutex.Lock()
+	s.cachedTransaction = cache.Transaction
+	s.mutex.Unlock()
+
+	s.logger.Info("Cache loaded from file",
+		"path", s.cacheFilePath,
+		"description", cache.Transaction.Attributes.Description,
+		"created_at", cache.Transaction.Attributes.CreatedAt.Format(time.RFC3339))
 }
