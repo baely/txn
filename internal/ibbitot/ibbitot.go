@@ -33,7 +33,6 @@ type PresenceService struct {
 	subtitle        string
 	lastUpdated     time.Time
 	indexPage       []byte
-	adminPage       []byte
 	slackWebhookURL string
 	adminSecretCode string
 	cacheFilePath   string
@@ -95,9 +94,8 @@ func NewWithConfig(cfg *Config) *PresenceService {
 	// Load cached state from file if it exists
 	s.loadCacheFromFile()
 
-	// Initialize pages
+	// Initialize page
 	s.refreshPage()
-	s.refreshAdminPage()
 
 	// Start daily refresher
 	go s.runDailyRefresher()
@@ -206,12 +204,22 @@ func (s *PresenceService) handleAdminPage(w http.ResponseWriter, r *http.Request
 
 	// Valid code - show admin interface
 	s.mutex.RLock()
-	page := s.adminPage
+	yesChecked := ""
+	noChecked := ""
+	if s.isInOffice {
+		yesChecked = "checked"
+	} else {
+		noChecked = "checked"
+	}
+	subtitle := html.EscapeString(s.subtitle)
 	s.mutex.RUnlock()
+
+	// Render admin page with current state and secret code
+	page := fmt.Sprintf(adminHTML, yesChecked, noChecked, subtitle, html.EscapeString(providedCode))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Write(page)
+	w.Write([]byte(page))
 }
 
 // handleAdminUpdate processes admin form submissions
@@ -240,8 +248,18 @@ func (s *PresenceService) handleAdminUpdate(w http.ResponseWriter, r *http.Reque
 
 	s.updateStatus(isInOffice, subtitle)
 
-	// Redirect back to admin page
-	http.Redirect(w, r, "/admin?code="+html.EscapeString(secretCode), http.StatusSeeOther)
+	// Redirect back to admin page (send code via POST)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><title>Redirecting...</title></head>
+<body>
+<form id="redirect" method="POST" action="/admin">
+<input type="hidden" name="secret_code" value="%s">
+</form>
+<script>document.getElementById('redirect').submit();</script>
+</body>
+</html>`, html.EscapeString(secretCode))))
 }
 
 // updateStatus updates the office status and subtitle
@@ -254,7 +272,6 @@ func (s *PresenceService) updateStatus(isInOffice bool, subtitle string) {
 	s.lastUpdated = time.Now()
 
 	s.refreshPageWithoutLock()
-	s.refreshAdminPageWithoutLock()
 
 	// Persist cache to file asynchronously
 	go s.saveCacheToFile()
@@ -305,29 +322,6 @@ func (s *PresenceService) refreshPageWithoutLock() {
 			s.notifySlack(status, description)
 		}(statusCopy, descCopy)
 	}
-}
-
-// refreshAdminPage updates the admin page with current data
-func (s *PresenceService) refreshAdminPage() {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	s.refreshAdminPageWithoutLock()
-}
-
-// refreshAdminPageWithoutLock updates the admin page without acquiring the mutex
-// Caller must hold the mutex lock before calling this function
-func (s *PresenceService) refreshAdminPageWithoutLock() {
-	yesChecked := ""
-	noChecked := ""
-	if s.isInOffice {
-		yesChecked = "checked"
-	} else {
-		noChecked = "checked"
-	}
-
-	subtitle := html.EscapeString(s.subtitle)
-	s.adminPage = []byte(fmt.Sprintf(adminHTML, yesChecked, noChecked, subtitle))
 }
 
 // getPresenceDescription returns the current subtitle

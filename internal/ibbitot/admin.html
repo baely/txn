@@ -99,7 +99,7 @@
     <div class="container">
         <h1>IBBITOT Admin</h1>
         <form method="POST" action="/admin/update">
-            <input type="hidden" name="secret_code" value="">
+            <input type="hidden" name="secret_code" value="%s">
 
             <div class="form-group">
                 <label>Office Status</label>
@@ -124,13 +124,5 @@
             <button type="submit">Update Status</button>
         </form>
     </div>
-    <script>
-        // Pass secret code from URL to form
-        const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get('code');
-        if (code) {
-            document.querySelector('input[name="secret_code"]').value = code;
-        }
-    </script>
 </body>
 </html>
