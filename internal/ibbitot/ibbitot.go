@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/baely/balance/pkg/model"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -24,22 +24,26 @@ import (
 // Melbourne timezone for all operations
 var melbourneLocation = must(time.LoadLocation("Australia/Melbourne"))
 
-// PresenceService tracks presence based on transaction events
+// PresenceService tracks presence based on manual admin updates
 type PresenceService struct {
-	router             chi.Router
-	logger             *slog.Logger
-	mutex              sync.RWMutex
-	cachedTransaction  model.TransactionResource
-	indexPage          []byte
-	slackWebhookURL    string
-	transactionFilters []TransactionFilter
-	cacheFilePath      string
+	router          chi.Router
+	logger          *slog.Logger
+	mutex           sync.RWMutex
+	isInOffice      bool
+	subtitle        string
+	lastUpdated     time.Time
+	indexPage       []byte
+	adminPage       []byte
+	slackWebhookURL string
+	adminSecretCode string
+	cacheFilePath   string
 }
 
 // Config contains configuration for the PresenceService
 type Config struct {
 	Logger          *slog.Logger
 	SlackWebhookURL string
+	AdminSecretCode string
 	CacheDir        string
 }
 
@@ -52,6 +56,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Logger:          slog.Default(),
 		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK"),
+		AdminSecretCode: os.Getenv("ADMIN_SECRET_CODE"),
 		CacheDir:        cacheDir,
 	}
 }
@@ -66,13 +71,8 @@ func NewWithConfig(cfg *Config) *PresenceService {
 	s := &PresenceService{
 		logger:          cfg.Logger,
 		slackWebhookURL: strings.TrimSpace(cfg.SlackWebhookURL),
+		adminSecretCode: strings.TrimSpace(cfg.AdminSecretCode),
 		cacheFilePath:   filepath.Join(cfg.CacheDir, "ibbitot-cache.json"),
-		transactionFilters: []TransactionFilter{
-			AmountBetween(-700, -400),         // between -$7 and -$4
-			Weekday(),                         // on a weekday
-			NotForeign(),                      // not a foreign transaction
-			Category("restaurants-and-cafes"), // in the restaurants-and-cafes category
-		},
 	}
 
 	// Setup router with standard middleware
@@ -86,14 +86,18 @@ func NewWithConfig(cfg *Config) *PresenceService {
 	r.Get("/raw", s.handleRawStatus)
 	r.Get("/", s.handleIndexPage)
 	r.Get("/favicon.ico", s.handleFavicon)
+	r.Get("/admin", s.handleAdminPage)
+	r.Post("/admin", s.handleAdminPage)
+	r.Post("/admin/update", s.handleAdminUpdate)
 
 	s.router = r
 
-	// Load cached transaction from file if it exists
+	// Load cached state from file if it exists
 	s.loadCacheFromFile()
 
-	// Initialize page
+	// Initialize pages
 	s.refreshPage()
+	s.refreshAdminPage()
 
 	// Start daily refresher
 	go s.runDailyRefresher()
@@ -108,13 +112,11 @@ func (s *PresenceService) Chi() chi.Router {
 
 // HandleEvent processes transaction events from the webhook service
 // It implements the balance.TransactionEventHandler interface
+// This is now a no-op since we don't use transaction data anymore
 func (s *PresenceService) HandleEvent(event balance.TransactionEvent) error {
-	s.logger.Info("Received transaction event",
+	s.logger.Debug("Received transaction event (ignored)",
 		"description", event.Transaction.Attributes.Description,
-		"amount", event.Transaction.Attributes.Amount.Value,
-		"created_at", event.Transaction.Attributes.CreatedAt)
-
-	s.processTransaction(event.Transaction)
+		"amount", event.Transaction.Attributes.Amount.Value)
 	return nil
 }
 
@@ -122,6 +124,9 @@ func (s *PresenceService) HandleEvent(event balance.TransactionEvent) error {
 var (
 	//go:embed index.html
 	indexHTML string
+
+	//go:embed admin.html
+	adminHTML string
 
 	//go:embed coffee-cup.png
 	coffeeCup []byte
@@ -159,60 +164,112 @@ func (s *PresenceService) handleFavicon(w http.ResponseWriter, r *http.Request) 
 	w.Write(coffeeCup)
 }
 
-// processTransaction determines if a transaction indicates presence
-func (s *PresenceService) processTransaction(transaction model.TransactionResource) {
-	// Apply all filters to the transaction
-	if !s.meetsAllCriteria(transaction) {
-		s.logger.Info("Transaction does not meet presence criteria",
-			"description", transaction.Attributes.Description)
+// handleAdminPage serves the admin interface
+func (s *PresenceService) handleAdminPage(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("Admin page request received", "method", r.Method)
+
+	// Check secret code
+	var providedCode string
+	if r.Method == "POST" {
+		r.ParseForm()
+		providedCode = r.FormValue("secret_code")
+	} else {
+		providedCode = r.URL.Query().Get("code")
+	}
+
+	// If no code provided or wrong code, show password entry
+	if providedCode != s.adminSecretCode || s.adminSecretCode == "" {
+		s.logger.Warn("Invalid admin access attempt")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+	<title>Admin Access</title>
+	<style>
+		body { font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 400px; margin: 100px auto; padding: 20px; }
+		input[type="password"] { width: 100%; padding: 10px; margin: 10px 0; font-size: 16px; }
+		button { width: 100%; padding: 12px; background: #007AFF; color: white; border: none; font-size: 16px; cursor: pointer; border-radius: 5px; }
+		button:hover { background: #0051D5; }
+	</style>
+</head>
+<body>
+	<h2>Admin Access Required</h2>
+	<form method="POST">
+		<input type="password" name="secret_code" placeholder="Enter secret code" required>
+		<button type="submit">Access</button>
+	</form>
+</body>
+</html>`))
 		return
 	}
 
-	s.storeTransaction(transaction)
+	// Valid code - show admin interface
+	s.mutex.RLock()
+	page := s.adminPage
+	s.mutex.RUnlock()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Write(page)
 }
 
-// meetsAllCriteria checks if a transaction meets all filter criteria
-func (s *PresenceService) meetsAllCriteria(transaction model.TransactionResource) bool {
-	for _, filter := range s.transactionFilters {
-		if !filter(transaction) {
-			return false
-		}
+// handleAdminUpdate processes admin form submissions
+func (s *PresenceService) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("Admin update request received")
+
+	r.ParseForm()
+
+	// Verify secret code
+	secretCode := r.FormValue("secret_code")
+	if secretCode != s.adminSecretCode || s.adminSecretCode == "" {
+		s.logger.Warn("Invalid admin update attempt")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
-	return true
+
+	// Get form values
+	status := r.FormValue("status")
+	subtitle := r.FormValue("subtitle")
+
+	isInOffice := status == "yes"
+
+	s.logger.Info("Updating office status",
+		"is_in_office", isInOffice,
+		"subtitle", subtitle)
+
+	s.updateStatus(isInOffice, subtitle)
+
+	// Redirect back to admin page
+	http.Redirect(w, r, "/admin?code="+html.EscapeString(secretCode), http.StatusSeeOther)
+}
+
+// updateStatus updates the office status and subtitle
+func (s *PresenceService) updateStatus(isInOffice bool, subtitle string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.isInOffice = isInOffice
+	s.subtitle = strings.TrimSpace(subtitle)
+	s.lastUpdated = time.Now()
+
+	s.refreshPageWithoutLock()
+	s.refreshAdminPageWithoutLock()
+
+	// Persist cache to file asynchronously
+	go s.saveCacheToFile()
 }
 
 // getPresenceStatus returns the current presence status as a string
 func (s *PresenceService) getPresenceStatus() string {
 	s.mutex.RLock()
-	transaction := s.cachedTransaction
+	isInOffice := s.isInOffice
 	s.mutex.RUnlock()
 
-	if isTransactionToday(transaction) {
+	if isInOffice {
 		return "yes"
 	}
 	return "no"
-}
-
-// storeTransaction stores a new transaction if it's more recent than the current one
-func (s *PresenceService) storeTransaction(transaction model.TransactionResource) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	// Only update if the new transaction is more recent
-	if !s.cachedTransaction.Attributes.CreatedAt.IsZero() &&
-		s.cachedTransaction.Attributes.CreatedAt.After(transaction.Attributes.CreatedAt) {
-		return
-	}
-
-	s.logger.Info("Updating cached transaction",
-		"description", transaction.Attributes.Description,
-		"created_at", transaction.Attributes.CreatedAt.Format(time.RFC3339))
-
-	s.cachedTransaction = transaction
-	s.refreshPageWithoutLock()
-
-	// Persist cache to file asynchronously
-	go s.saveCacheToFile()
 }
 
 // refreshPage updates the index page with current data
@@ -226,13 +283,12 @@ func (s *PresenceService) refreshPage() {
 // refreshPageWithoutLock updates the index page with current data without acquiring the mutex
 // Caller must hold the mutex lock before calling this function
 func (s *PresenceService) refreshPageWithoutLock() {
-	isPresent := isTransactionToday(s.cachedTransaction)
 	status := "no"
-	if isPresent {
+	if s.isInOffice {
 		status = "yes"
 	}
 
-	description := s.getPresenceDescription(isPresent, s.cachedTransaction)
+	description := s.getPresenceDescription()
 	newPage := []byte(fmt.Sprintf(indexHTML, status, description))
 
 	// Check if the page content has changed
@@ -242,27 +298,44 @@ func (s *PresenceService) refreshPageWithoutLock() {
 	// Notify Slack if the page changed
 	if changed && s.slackWebhookURL != "" {
 		// Create local copies of variables needed for the goroutine
-		slackURL := s.slackWebhookURL
 		statusCopy := status
 		descCopy := description
 
-		go func(url, status, description string) {
+		go func(status, description string) {
 			s.notifySlack(status, description)
-		}(slackURL, statusCopy, descCopy)
+		}(statusCopy, descCopy)
 	}
 }
 
-// getPresenceDescription formats a description for the presence status
-func (s *PresenceService) getPresenceDescription(isPresent bool, transaction model.TransactionResource) string {
-	if !isPresent || transaction.Id == "" {
-		return ""
+// refreshAdminPage updates the admin page with current data
+func (s *PresenceService) refreshAdminPage() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.refreshAdminPageWithoutLock()
+}
+
+// refreshAdminPageWithoutLock updates the admin page without acquiring the mutex
+// Caller must hold the mutex lock before calling this function
+func (s *PresenceService) refreshAdminPageWithoutLock() {
+	yesChecked := ""
+	noChecked := ""
+	if s.isInOffice {
+		yesChecked = "checked"
+	} else {
+		noChecked = "checked"
 	}
 
-	amount := fmt.Sprintf("$%.2f", -float64(transaction.Attributes.Amount.ValueInBaseUnits)/100.0)
-	timeStr := transaction.Attributes.CreatedAt.In(melbourneLocation).Format(time.Kitchen)
-	details := fmt.Sprintf("%s at %s", transaction.Attributes.Description, timeStr)
+	subtitle := html.EscapeString(s.subtitle)
+	s.adminPage = []byte(fmt.Sprintf(adminHTML, yesChecked, noChecked, subtitle))
+}
 
-	return fmt.Sprintf("<img src=\"/favicon.ico\" />%s on %s", amount, details)
+// getPresenceDescription returns the current subtitle
+func (s *PresenceService) getPresenceDescription() string {
+	if !s.isInOffice || s.subtitle == "" {
+		return ""
+	}
+	return s.subtitle
 }
 
 // notifySlack sends a notification to Slack when presence status changes
@@ -270,9 +343,6 @@ func (s *PresenceService) notifySlack(status, description string) {
 	if s.slackWebhookURL == "" {
 		return
 	}
-
-	// Clean description for Slack
-	description = strings.Replace(description, "<img src=\"/favicon.ico\" />", "", -1)
 
 	payload := struct {
 		Status      string `json:"status"`
@@ -300,12 +370,9 @@ func (s *PresenceService) notifySlack(status, description string) {
 	}
 }
 
-// runDailyRefresher refreshes the page once per day at midnight
+// runDailyRefresher refreshes the page once per day at midnight and resets status
 func (s *PresenceService) runDailyRefresher() {
 	s.logger.Info("Starting daily page refresher")
-
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
 
 	for {
 		now := time.Now().In(melbourneLocation)
@@ -320,70 +387,16 @@ func (s *PresenceService) runDailyRefresher() {
 		// Wait until midnight
 		time.Sleep(timeToWait)
 
-		// Refresh the page to clear yesterday's status
-		s.refreshPage()
+		// Reset status to "no" at midnight
+		s.logger.Info("Daily reset: setting status to 'no'")
+		s.updateStatus(false, "")
 
 		// Short sleep to avoid potential race conditions
 		time.Sleep(time.Second)
 	}
 }
 
-// Helper functions and types
-
-// TransactionFilter is a function that determines if a transaction meets a specific criterion
-type TransactionFilter func(model.TransactionResource) bool
-
-// AmountBetween creates a filter that checks if the transaction amount is between the given values
-func AmountBetween(minBaseUnits, maxBaseUnits int) TransactionFilter {
-	return func(transaction model.TransactionResource) bool {
-		valueInBaseUnits := transaction.Attributes.Amount.ValueInBaseUnits
-		return valueInBaseUnits >= minBaseUnits && valueInBaseUnits <= maxBaseUnits
-	}
-}
-
-// TimeBetween creates a filter that checks if the transaction time is between specific hours
-func TimeBetween(minHour, maxHour int) TransactionFilter {
-	return func(transaction model.TransactionResource) bool {
-		hour := transaction.Attributes.CreatedAt.In(melbourneLocation).Hour()
-		return hour >= minHour && hour <= maxHour
-	}
-}
-
-// Weekday creates a filter that checks if the transaction occurred on a weekday
-func Weekday() TransactionFilter {
-	return func(transaction model.TransactionResource) bool {
-		day := transaction.Attributes.CreatedAt.In(melbourneLocation).Weekday()
-		return day >= time.Monday && day <= time.Friday
-	}
-}
-
-// NotForeign creates a filter that checks if the transaction is not a foreign transaction
-func NotForeign() TransactionFilter {
-	return func(transaction model.TransactionResource) bool {
-		return transaction.Attributes.ForeignAmount == nil
-	}
-}
-
-// Category creates a filter that checks if the transaction belongs to a specific category
-func Category(categoryID string) TransactionFilter {
-	return func(transaction model.TransactionResource) bool {
-		if transaction.Relationships.Category.Data == nil {
-			return false
-		}
-		return transaction.Relationships.Category.Data.Id == categoryID
-	}
-}
-
-// isTransactionToday checks if a transaction occurred today
-func isTransactionToday(transaction model.TransactionResource) bool {
-	if transaction.Id == "" {
-		return false
-	}
-
-	now := time.Now().In(melbourneLocation)
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, melbourneLocation)
-	return transaction.Attributes.CreatedAt.In(melbourneLocation).After(midnight)
-}
+// Helper functions
 
 // must panics if the given error is not nil
 func must[T any](t T, err error) T {
@@ -395,25 +408,20 @@ func must[T any](t T, err error) T {
 
 // cacheData represents the structure of the cached data file
 type cacheData struct {
-	Transaction model.TransactionResource `json:"transaction"`
-	UpdatedAt   time.Time                 `json:"updated_at"`
+	IsInOffice  bool      `json:"is_in_office"`
+	Subtitle    string    `json:"subtitle"`
+	LastUpdated time.Time `json:"last_updated"`
 }
 
-// saveCacheToFile persists the cached transaction to disk
+// saveCacheToFile persists the cached state to disk
 func (s *PresenceService) saveCacheToFile() {
 	s.mutex.RLock()
-	transaction := s.cachedTransaction
-	s.mutex.RUnlock()
-
-	// Skip saving if there's no transaction to save
-	if transaction.Id == "" {
-		return
-	}
-
 	cache := cacheData{
-		Transaction: transaction,
-		UpdatedAt:   time.Now(),
+		IsInOffice:  s.isInOffice,
+		Subtitle:    s.subtitle,
+		LastUpdated: s.lastUpdated,
 	}
+	s.mutex.RUnlock()
 
 	data, err := json.Marshal(cache)
 	if err != nil {
@@ -437,7 +445,7 @@ func (s *PresenceService) saveCacheToFile() {
 	s.logger.Info("Cache saved to file", "path", s.cacheFilePath)
 }
 
-// loadCacheFromFile loads the cached transaction from disk
+// loadCacheFromFile loads the cached state from disk
 func (s *PresenceService) loadCacheFromFile() {
 	data, err := os.ReadFile(s.cacheFilePath)
 	if err != nil {
@@ -456,11 +464,13 @@ func (s *PresenceService) loadCacheFromFile() {
 	}
 
 	s.mutex.Lock()
-	s.cachedTransaction = cache.Transaction
+	s.isInOffice = cache.IsInOffice
+	s.subtitle = cache.Subtitle
+	s.lastUpdated = cache.LastUpdated
 	s.mutex.Unlock()
 
 	s.logger.Info("Cache loaded from file",
 		"path", s.cacheFilePath,
-		"description", cache.Transaction.Attributes.Description,
-		"created_at", cache.Transaction.Attributes.CreatedAt.Format(time.RFC3339))
+		"is_in_office", cache.IsInOffice,
+		"subtitle", cache.Subtitle)
 }

@@ -29,6 +29,7 @@ COPY --from=builder /app/txn .
 
 # Copy any static assets
 COPY --from=builder /app/internal/ibbitot/index.html /app/internal/ibbitot/
+COPY --from=builder /app/internal/ibbitot/admin.html /app/internal/ibbitot/
 COPY --from=builder /app/internal/ibbitot/coffee-cup.png /app/internal/ibbitot/
 COPY --from=builder /app/internal/tracker/server/index.html /app/internal/tracker/server/
 
