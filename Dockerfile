@@ -33,8 +33,10 @@ COPY --from=builder /app/internal/ibbitot/admin.html /app/internal/ibbitot/
 COPY --from=builder /app/internal/ibbitot/coffee-cup.png /app/internal/ibbitot/
 COPY --from=builder /app/internal/tracker/server/index.html /app/internal/tracker/server/
 
-# Create a non-root user
-RUN adduser -D appuser
+# Create a non-root user and data directory
+RUN adduser -D appuser && \
+    mkdir -p /data && \
+    chown -R appuser:appuser /data
 USER appuser
 
 # Expose port
