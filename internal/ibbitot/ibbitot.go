@@ -35,6 +35,7 @@ type PresenceService struct {
 	indexPage       []byte
 	slackWebhookURL string
 	adminSecretCode string
+	apiKey          string
 	cacheFilePath   string
 }
 
@@ -44,6 +45,7 @@ type Config struct {
 	SlackWebhookURL string
 	AdminSecretCode string
 	CacheDir        string
+	APIKey          string
 }
 
 // DefaultConfig returns the default service configuration
@@ -57,6 +59,7 @@ func DefaultConfig() *Config {
 		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK"),
 		AdminSecretCode: os.Getenv("ADMIN_SECRET_CODE"),
 		CacheDir:        cacheDir,
+		APIKey:          os.Getenv("IBBITOT_API_KEY"),
 	}
 }
 
@@ -71,6 +74,7 @@ func NewWithConfig(cfg *Config) *PresenceService {
 		logger:          cfg.Logger,
 		slackWebhookURL: strings.TrimSpace(cfg.SlackWebhookURL),
 		adminSecretCode: strings.TrimSpace(cfg.AdminSecretCode),
+		apiKey:          strings.TrimSpace(cfg.APIKey),
 		cacheFilePath:   filepath.Join(cfg.CacheDir, "ibbitot-cache.json"),
 	}
 
@@ -88,6 +92,7 @@ func NewWithConfig(cfg *Config) *PresenceService {
 	r.Get("/admin", s.handleAdminPage)
 	r.Post("/admin", s.handleAdminPage)
 	r.Post("/admin/update", s.handleAdminUpdate)
+	r.Post("/api/update", s.handleAPIUpdate)
 
 	s.router = r
 
@@ -260,6 +265,50 @@ func (s *PresenceService) handleAdminUpdate(w http.ResponseWriter, r *http.Reque
 <script>document.getElementById('redirect').submit();</script>
 </body>
 </html>`, html.EscapeString(secretCode))))
+}
+
+// handleAPIUpdate processes JSON API updates with Bearer token auth
+func (s *PresenceService) handleAPIUpdate(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("API update request received")
+
+	// Verify API key
+	if s.apiKey == "" {
+		s.logger.Warn("API update attempted but no API key configured")
+		http.Error(w, "API not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	auth := r.Header.Get("Authorization")
+	if auth != "Bearer "+s.apiKey {
+		s.logger.Warn("Invalid API key")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var body struct {
+		Status      string `json:"status"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if body.Status != "yes" && body.Status != "no" {
+		http.Error(w, "Status must be \"yes\" or \"no\"", http.StatusBadRequest)
+		return
+	}
+
+	isInOffice := body.Status == "yes"
+
+	s.logger.Info("API updating office status",
+		"is_in_office", isInOffice,
+		"description", body.Description)
+
+	s.updateStatus(isInOffice, body.Description)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // updateStatus updates the office status and subtitle
