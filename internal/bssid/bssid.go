@@ -67,6 +67,16 @@ func (h *Handler) HandleBSSID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	melb, _ := time.LoadLocation("Australia/Melbourne")
+	now := time.Now().In(melb)
+	weekday := now.Weekday()
+	hour := now.Hour()
+	if weekday == time.Saturday || weekday == time.Sunday || hour < 8 || hour >= 11 {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("outside window"))
+		return
+	}
+
 	h.mu.Lock()
 	if time.Since(h.lastSeen) < 15*time.Minute {
 		h.lastSeen = time.Now()
