@@ -76,6 +76,11 @@ func (t *TrackerService) Chi() chi.Router {
 	return t.router
 }
 
+// DB returns the database client for reuse by other packages
+func (t *TrackerService) DB() *database.Client {
+	return t.db
+}
+
 // HandleEvent processes transaction events from the webhook service
 // It implements the balance.TransactionEventHandler interface
 func (t *TrackerService) HandleEvent(event balance.TransactionEvent) error {
