@@ -2,6 +2,7 @@
 package bssid
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,7 +35,11 @@ func New(db *database.Client) *Handler {
 	}
 }
 
-// HandleBSSID processes a POST request containing a plaintext BSSID
+type bssidRequest struct {
+	BSSID string `json:"bssid"`
+}
+
+// HandleBSSID processes a POST request containing a JSON payload with a "bssid" key
 func (h *Handler) HandleBSSID(w http.ResponseWriter, r *http.Request) {
 	dump, err := httputil.DumpRequest(r, false)
 	if err != nil {
@@ -49,7 +54,13 @@ func (h *Handler) HandleBSSID(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info(fmt.Sprintf("BSSID request:\n%s\nBody: %s", string(dump), string(body)))
 
-	bssid := strings.TrimSpace(string(body))
+	var req bssidRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	bssid := strings.TrimSpace(req.BSSID)
 
 	if !strings.EqualFold(bssid, h.targetBSSID) {
 		w.WriteHeader(http.StatusOK)
