@@ -5,7 +5,10 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/baely/txn/internal/balance"
+	"github.com/baely/txn/internal/bssid"
 	"github.com/baely/txn/internal/common/errors"
 	"github.com/baely/txn/internal/common/logger"
 	"github.com/baely/txn/internal/ibbitot"
@@ -32,8 +35,12 @@ func main() {
 	webhookService.RegisterHandler(presenceService)
 	webhookService.RegisterHandler(trackerService)
 
-	// Register domain handlers
-	s.RegisterDomain("events.baileys.dev", webhookService.Chi())
+	// Build combined router for events domain
+	bssidHandler := bssid.New(trackerService.DB())
+	eventsRouter := chi.NewRouter()
+	eventsRouter.Mount("/", webhookService.Chi())
+	eventsRouter.Post("/bssid", bssidHandler.HandleBSSID)
+	s.RegisterDomain("events.baileys.dev", eventsRouter)
 	s.RegisterDomain("isbaileybutlerintheoffice.today", presenceService.Chi())
 	s.RegisterDomain("baileyneeds.coffee", trackerService.Chi())
 	s.RegisterDomain("caffeine-api.baileys.dev", trackerService.Chi())
