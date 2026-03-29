@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/baely/balance/pkg/model"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/baely/txn/pkg/model"
 
 	"github.com/baely/txn/internal/common/errors"
 	commonHttp "github.com/baely/txn/internal/common/http"
@@ -58,7 +59,7 @@ func NewWithConfig(cfg *Config) *WebhookService {
 	// Register routes
 	r.Post("/up/event", service.handleWebhook)
 	r.Post("/event", service.handleWebhook)
-	
+
 	service.router = r
 
 	// Start processing goroutine
@@ -96,7 +97,7 @@ func (s *WebhookService) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Queue event for processing
 	s.rawChan <- body
-	
+
 	// Return success immediately
 	commonHttp.Success(w, map[string]string{"status": "accepted"})
 }
