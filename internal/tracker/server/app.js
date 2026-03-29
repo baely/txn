@@ -10,14 +10,37 @@ Chart.register(annotationPlugin);
 // Test that annotation works
 console.log('Annotation plugin registered:', Chart.registry.plugins.get('annotation'));
 
+// URL parameter helpers
+function getDateRangeFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    const startParam = params.get('start');
+    const endParam = params.get('end');
+    if (startParam && endParam) {
+        const start = new Date(startParam);
+        const end = new Date(endParam);
+        if (!isNaN(start) && !isNaN(end)) {
+            return { start, end };
+        }
+    }
+    return null;
+}
+
+function updateURL(start, end) {
+    const params = new URLSearchParams();
+    params.set('start', toRFC3339(start));
+    params.set('end', toRFC3339(end));
+    history.replaceState(null, '', '?' + params.toString());
+}
+
 // Global state
-let currentTimeRange = {
+const urlRange = getDateRangeFromURL();
+let currentTimeRange = urlRange || {
     start: new Date(Date.now() - 24 * 60 * 60 * 1000),
     end: new Date()
 };
-let currentPreset = "Last 24h";
+let currentPreset = urlRange ? null : "Last 24h";
 let levels = [];
-let timeEdited = false;
+let timeEdited = !!urlRange;
 
 // Preset definitions
 const presets = {
@@ -76,6 +99,7 @@ function findMatchingPreset(start, end) {
 function updateDatesAndFetch(start, end) {
     currentTimeRange = { start, end };
     timeEdited = true;
+    updateURL(start, end);
     updateDashboard();
 }
 
@@ -210,7 +234,10 @@ const dateRangePicker = flatpickr("#dateRange", {
                 instance.setDate([range.start, range.end]);
                 currentPreset = label;
                 instance.input.value = label;
-                updateDatesAndFetch(range.start, range.end);
+                currentTimeRange = { start: range.start, end: range.end };
+                timeEdited = true;
+                updateURL(range.start, range.end);
+                updateDashboard();
             });
             presetContainer.appendChild(button);
         });
@@ -223,6 +250,7 @@ const dateRangePicker = flatpickr("#dateRange", {
         if (selectedDates.length === 2) {
             const preset = findMatchingPreset(selectedDates[0], selectedDates[1]);
             if (preset) {
+                currentPreset = preset;
                 instance.input.value = preset;
             }
         }

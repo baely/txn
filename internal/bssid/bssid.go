@@ -90,7 +90,7 @@ func (h *Handler) HandleBSSID(w http.ResponseWriter, r *http.Request) {
 
 	event := models.CaffeineEvent{
 		Timestamp:   time.Now(),
-		Description: "Atlassian Office Coffee",
+		Description: "Atlassian Office Large Oat Latte",
 		Amount:      160,
 		Cost:        0,
 	}
